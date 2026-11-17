@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <base target="_top" />
+    <title><?= shopName ?></title>
+    <?!= include('Styles'); ?>
+  </head>
+  <body>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <header class="hero">
+      <div class="container">
+        <div class="hero-top">
+          <h1 id="shopTitle" class="hero-title">🍪 <?= shopName ?></h1>
+          <span id="deadlinePill" class="deadline-pill" style="display: none;"></span>
+        </div>
+        <div id="announcementBox" class="announcement-box">
+          正在載入團購資訊...
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="toolbar" aria-label="商品篩選工具">
+        <div class="search-sort-row">
+          <input
+            id="searchInput"
+            class="search-input"
+            type="search"
+            placeholder="搜尋零食名稱、口味或說明..."
+            aria-label="搜尋商品"
+          />
+          <select id="sortSelect" class="select-input" aria-label="商品排序">
+            <option value="default">預設排序</option>
+            <option value="expiryAsc">效期：由近到遠</option>
+            <option value="priceAsc">價格：由低到高</option>
+            <option value="discountDesc">折扣：省最多</option>
+          </select>
+        </div>
+        <div id="categoryPills" class="category-pills" role="tablist" aria-label="商品分類"></div>
+      </section>
+
+      <section id="productGrid" class="product-grid" aria-live="polite">
+        <div class="state-box">正在讀取最新即期零食與庫存...</div>
+      </section>
+    </main>
+
+    <!-- 底部購物車列 -->
+    <div class="cart-bar">
+      <div class="cart-bar-inner">
+        <div class="cart-summary-text">
+          <span id="cartCountText" class="cart-count">尚未選購商品</span>
+          <span id="cartTotalText" class="cart-total">NT$ 0</span>
+        </div>
+        <button id="openCartBtn" class="btn btn-primary" type="button" disabled>
+          確認明細 / 填寫面交資料
+        </button>
+      </div>
+    </div>
+
+    <!-- 購物車與結帳視窗 -->
+    <div id="checkoutModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="checkoutModalTitle">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h2 id="checkoutModalTitle" class="modal-title">🛒 確認訂單與面交資訊</h2>
+          <button id="closeCheckoutBtn" class="close-btn" type="button" aria-label="關閉">✕</button>
+        </div>
+
+        <div id="cartItemsList" class="cart-items-list"></div>
+
+        <form id="checkoutForm">
+          <div class="form-group">
+            <label class="form-label" for="buyerName">
+              訂購人姓名 / 暱稱 <span class="required-mark">*</span>
+            </label>
+            <input id="buyerName" class="form-input" type="text" required placeholder="例如：王小明" />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="buyerPhone">
+              聯絡手機 <span class="required-mark">*</span>
+            </label>
+            <input
+              id="buyerPhone"
+              class="form-input"
+              type="tel"
+              inputmode="tel"
+              required
+              placeholder="例如：0912345678"
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="buyerLineName">LINE 顯示名稱（選填，方便面交對帳聯絡）</label>
+            <input id="buyerLineName" class="form-input" type="text" placeholder="例如：Ming" />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="pickupLocation">
+              面交 / 自取地點 <span class="required-mark">*</span>
+            </label>
+            <select id="pickupLocation" class="form-input" required></select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="pickupTimeNote">方便取貨時段 / 備註（選填）</label>
+            <input
+              id="pickupTimeNote"
+              class="form-input"
+              type="text"
+              placeholder="例如：週五 18:30 後方便面交"
+            />
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin: 16px 0 12px;">
+            <span style="font-weight:700;">應付總金額（取貨付款）</span>
+            <span id="modalTotalAmount" style="font-size:1.25rem; font-weight:800; color:var(--primary-hover);">NT$ 0</span>
+          </div>
+
+          <button id="submitOrderBtn" class="btn btn-primary" type="submit" style="width:100%; padding:12px;">
+            送出團購訂單
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 下單成功視窗 -->
+    <div id="successModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="successModalTitle">
+      <div class="modal-panel">
+        <div class="success-card">
+          <div class="success-icon">🎉</div>
+          <h2 id="successModalTitle" class="modal-title">下單成功！已通知團主</h2>
+          <p style="font-size:0.88rem; color:var(--text-muted); margin:6px 0 0;">
+            建議截圖保留下方訂單編號，方便面交時核對。
+          </p>
+
+          <div id="orderReceipt" class="order-receipt"></div>
+
+          <button id="continueShopBtn" class="btn btn-primary" type="button" style="width:100%; padding:12px;">
+            返回商品列表（更新最新庫存）
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <?!= include('Scripts'); ?>
+  </body>
+</html>

@@ -1,0 +1,454 @@
+<script>
+  const state = {
+    settings: null,
+    products: [],
+    cart: {}, // { [productId]: qty }
+    selectedCategory: '全部',
+    searchQuery: '',
+    sortBy: 'default',
+    isSubmitting: false
+  };
+
+  const STORAGE_KEY = 'snack_group_buy_cart_v1';
+
+  document.addEventListener('DOMContentLoaded', () => {
+    loadSavedCart();
+    bindEvents();
+    fetchStorefrontData();
+  });
+
+  function bindEvents() {
+    document.getElementById('searchInput').addEventListener('input', e => {
+      state.searchQuery = e.target.value.trim().toLowerCase();
+      renderProducts();
+    });
+
+    document.getElementById('sortSelect').addEventListener('change', e => {
+      state.sortBy = e.target.value;
+      renderProducts();
+    });
+
+    document.getElementById('openCartBtn').addEventListener('click', openCheckoutModal);
+    document.getElementById('closeCheckoutBtn').addEventListener('click', closeCheckoutModal);
+    document.getElementById('checkoutModal').addEventListener('click', e => {
+      if (e.target.id === 'checkoutModal') closeCheckoutModal();
+    });
+
+    document.getElementById('checkoutForm').addEventListener('submit', handleOrderSubmit);
+    document.getElementById('continueShopBtn').addEventListener('click', () => {
+      document.getElementById('successModal').classList.remove('open');
+      fetchStorefrontData();
+    });
+  }
+
+  function fetchStorefrontData() {
+    google.script.run
+      .withSuccessHandler(data => {
+        state.settings = data.settings;
+        state.products = data.products || [];
+        reconcileCartWithStock();
+        renderHeaderSettings();
+        renderCategoryPills();
+        renderProducts();
+        renderCartSummary();
+      })
+      .withFailureHandler(err => {
+        document.getElementById('productGrid').innerHTML =
+          `<div class="state-box">讀取失敗：${escapeHtml(err.message || '請稍後再試')}</div>`;
+      })
+      .getStorefrontData();
+  }
+
+  function renderHeaderSettings() {
+    const s = state.settings;
+    if (!s) return;
+
+    document.getElementById('shopTitle').textContent = `🍪 ${s.shopName}`;
+    document.getElementById('announcementBox').textContent =
+      s.announcement || '歡迎選購限量即期零食！';
+
+    const deadlineEl = document.getElementById('deadlinePill');
+    if (s.groupBuyDeadline) {
+      deadlineEl.textContent = `⏳ 結單：${s.groupBuyDeadline}`;
+      deadlineEl.style.display = 'inline-block';
+    } else {
+      deadlineEl.style.display = 'none';
+    }
+
+    const pickupSelect = document.getElementById('pickupLocation');
+    const prevValue = pickupSelect.value;
+    pickupSelect.innerHTML = s.pickupLocations
+      .map(loc => `<option value="${escapeHtml(loc)}">${escapeHtml(loc)}</option>`)
+      .join('');
+    if (prevValue && s.pickupLocations.includes(prevValue)) {
+      pickupSelect.value = prevValue;
+    }
+  }
+
+  function renderCategoryPills() {
+    const categories = ['全部', ...new Set(state.products.map(p => p.category).filter(Boolean))];
+    if (!categories.includes(state.selectedCategory)) {
+      state.selectedCategory = '全部';
+    }
+
+    const container = document.getElementById('categoryPills');
+    container.innerHTML = categories
+      .map(cat => {
+        const activeClass = cat === state.selectedCategory ? 'active' : '';
+        return `<button type="button" class="pill-btn ${activeClass}" data-cat="${escapeHtml(cat)}">${escapeHtml(cat)}</button>`;
+      })
+      .join('');
+
+    container.querySelectorAll('.pill-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.selectedCategory = btn.getAttribute('data-cat');
+        renderCategoryPills();
+        renderProducts();
+      });
+    });
+  }
+
+  function getFilteredProducts() {
+    let list = state.products.filter(p => {
+      const matchCat = state.selectedCategory === '全部' || p.category === state.selectedCategory;
+      const q = state.searchQuery;
+      const matchQuery = !q ||
+        p.name.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q) ||
+        p.spec.toLowerCase().includes(q);
+      return matchCat && matchQuery;
+    });
+
+    if (state.sortBy === 'expiryAsc') {
+      list = [...list].sort((a, b) => a.daysLeft - b.daysLeft);
+    } else if (state.sortBy === 'priceAsc') {
+      list = [...list].sort((a, b) => a.groupPrice - b.groupPrice);
+    } else if (state.sortBy === 'discountDesc') {
+      list = [...list].sort((a, b) => (a.discountRate || 10) - (b.discountRate || 10));
+    }
+    return list;
+  }
+
+  function renderProducts() {
+    const grid = document.getElementById('productGrid');
+    const items = getFilteredProducts();
+
+    if (items.length === 0) {
+      grid.innerHTML = '<div class="state-box">找不到符合條件的零食商品 🍪</div>';
+      return;
+    }
+
+    grid.innerHTML = items.map(p => buildProductCardHtml(p)).join('');
+
+    grid.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const productId = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        if (action === 'add' || action === 'inc') updateCartQty(productId, 1);
+        if (action === 'dec') updateCartQty(productId, -1);
+      });
+    });
+  }
+
+  function buildProductCardHtml(p) {
+    const inCartQty = state.cart[p.productId] || 0;
+    const isSoldOut = p.stock <= 0;
+    const expiryInfo = getExpiryBadgeInfo(p.expiryDate, p.daysLeft);
+    const hasValidImage = /^https?:\/\//i.test(p.imageUrl);
+
+    const mediaHtml = hasValidImage
+      ? `<img src="${escapeHtml(p.imageUrl)}" alt="${escapeHtml(p.name)}" loading="lazy" onerror="this.outerHTML='<div class=\\'media-placeholder\\'>🍪</div>'" />`
+      : '<div class="media-placeholder">🍪</div>';
+
+    const discountHtml = p.discountRate
+      ? `<span class="discount-badge">${p.discountRate} 折</span>`
+      : '';
+
+    const soldOutOverlay = isSoldOut
+      ? '<div class="sold-out-overlay">已搶光</div>'
+      : '';
+
+    const stockText = isSoldOut
+      ? '<span style="color:var(--danger);font-weight:700;">已搶光</span>'
+      : p.stock <= 5
+        ? `<span style="color:var(--danger);font-weight:700;">🔥 僅剩 ${p.stock} 份</span>`
+        : `<span>庫存 ${p.stock} 份</span>`;
+
+    const origPriceHtml = p.originalPrice > p.groupPrice
+      ? `<span class="price-orig">原價 $${p.originalPrice}</span>`
+      : '';
+
+    let actionHtml = '';
+    if (isSoldOut) {
+      actionHtml = '<button class="btn btn-primary" type="button" disabled>已搶光</button>';
+    } else if (inCartQty > 0) {
+      actionHtml = `
+        <div class="qty-stepper">
+          <button class="qty-btn" type="button" data-action="dec" data-id="${escapeHtml(p.productId)}" aria-label="減少數量">−</button>
+          <span class="qty-val">${inCartQty}</span>
+          <button class="qty-btn" type="button" data-action="inc" data-id="${escapeHtml(p.productId)}" ${inCartQty >= p.stock ? 'disabled' : ''} aria-label="增加數量">+</button>
+        </div>`;
+    } else {
+      actionHtml = `<button class="btn btn-primary" type="button" data-action="add" data-id="${escapeHtml(p.productId)}">+ 加入</button>`;
+    }
+
+    return `
+      <article class="card ${isSoldOut ? 'sold-out' : ''}">
+        <div class="card-media">
+          ${mediaHtml}
+          ${discountHtml}
+          ${soldOutOverlay}
+        </div>
+        <div class="card-body">
+          <span class="expiry-badge ${expiryInfo.cls}">${expiryInfo.text}</span>
+          <h3 class="card-title">${escapeHtml(p.name)}</h3>
+          <div class="card-meta">
+            <span>${escapeHtml(p.spec || p.category)}</span>
+            ${stockText}
+          </div>
+          ${p.description ? `<p class="card-desc">${escapeHtml(p.description)}</p>` : ''}
+          <div class="card-footer">
+            <div class="price-group">
+              ${origPriceHtml}
+              <span class="price-now">$${p.groupPrice}</span>
+            </div>
+            ${actionHtml}
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function getExpiryBadgeInfo(expiryDate, daysLeft) {
+    const displayDate = expiryDate ? expiryDate.replace(/-/g, '/') : '';
+    if (daysLeft === 0) {
+      return { cls: 'expiry-urgent', text: `🔥 今日到期 (${displayDate})` };
+    }
+    if (daysLeft <= 7) {
+      return { cls: 'expiry-urgent', text: `🔥 效期 ${displayDate} · 剩 ${daysLeft} 天` };
+    }
+    if (daysLeft <= 30) {
+      return { cls: 'expiry-soon', text: `⏰ 效期 ${displayDate} · 剩 ${daysLeft} 天` };
+    }
+    return { cls: 'expiry-normal', text: `📅 效期 ${displayDate} · 剩 ${daysLeft} 天` };
+  }
+
+  function updateCartQty(productId, delta) {
+    const product = state.products.find(p => p.productId === productId);
+    if (!product) return;
+
+    const current = state.cart[productId] || 0;
+    const next = current + delta;
+
+    if (next <= 0) {
+      delete state.cart[productId];
+    } else if (next > product.stock) {
+      showToast(`「${product.name}」目前最多只能買 ${product.stock} 份喔！`);
+      state.cart[productId] = product.stock;
+    } else {
+      state.cart[productId] = next;
+    }
+
+    saveCart();
+    renderProducts();
+    renderCartSummary();
+    if (document.getElementById('checkoutModal').classList.contains('open')) {
+      renderCheckoutItems();
+    }
+  }
+
+  function reconcileCartWithStock() {
+    let adjusted = false;
+    const productMap = new Map(state.products.map(p => [p.productId, p]));
+
+    Object.keys(state.cart).forEach(pid => {
+      const p = productMap.get(pid);
+      if (!p || p.stock <= 0) {
+        delete state.cart[pid];
+        adjusted = true;
+      } else if (state.cart[pid] > p.stock) {
+        state.cart[pid] = p.stock;
+        adjusted = true;
+      }
+    });
+
+    if (adjusted) {
+      saveCart();
+      showToast('部分商品庫存有變動，已自動為您調整購物車數量');
+    }
+  }
+
+  function getCartEntries() {
+    const productMap = new Map(state.products.map(p => [p.productId, p]));
+    return Object.entries(state.cart)
+      .map(([pid, qty]) => {
+        const product = productMap.get(pid);
+        if (!product || qty <= 0) return null;
+        return { product, qty, subtotal: product.groupPrice * qty };
+      })
+      .filter(Boolean);
+  }
+
+  function renderCartSummary() {
+    const entries = getCartEntries();
+    const totalCount = entries.reduce((sum, e) => sum + e.qty, 0);
+    const totalAmount = entries.reduce((sum, e) => sum + e.subtotal, 0);
+
+    document.getElementById('cartCountText').textContent =
+      totalCount > 0 ? `已選 ${totalCount} 件零食` : '尚未選購商品';
+    document.getElementById('cartTotalText').textContent = `NT$ ${totalAmount}`;
+    document.getElementById('modalTotalAmount').textContent = `NT$ ${totalAmount}`;
+
+    const btn = document.getElementById('openCartBtn');
+    btn.disabled = totalCount === 0;
+  }
+
+  function openCheckoutModal() {
+    if (getCartEntries().length === 0) return;
+    renderCheckoutItems();
+    document.getElementById('checkoutModal').classList.add('open');
+  }
+
+  function closeCheckoutModal() {
+    document.getElementById('checkoutModal').classList.remove('open');
+  }
+
+  function renderCheckoutItems() {
+    const entries = getCartEntries();
+    const listEl = document.getElementById('cartItemsList');
+
+    if (entries.length === 0) {
+      closeCheckoutModal();
+      return;
+    }
+
+    listEl.innerHTML = entries.map(({ product, qty, subtotal }) => `
+      <div class="cart-item-row">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; font-size:0.92rem;">${escapeHtml(product.name)}</div>
+          <div style="font-size:0.78rem; color:var(--text-muted);">
+            單價 $${product.groupPrice} · 效期 ${escapeHtml(product.expiryDate)}
+          </div>
+        </div>
+        <div class="qty-stepper">
+          <button class="qty-btn" type="button" data-modal-action="dec" data-id="${escapeHtml(product.productId)}">−</button>
+          <span class="qty-val">${qty}</span>
+          <button class="qty-btn" type="button" data-modal-action="inc" data-id="${escapeHtml(product.productId)}" ${qty >= product.stock ? 'disabled' : ''}>+</button>
+        </div>
+        <div style="min-width:56px; text-align:right; font-weight:800;">$${subtotal}</div>
+      </div>
+    `).join('');
+
+    listEl.querySelectorAll('[data-modal-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pid = btn.getAttribute('data-id');
+        const delta = btn.getAttribute('data-modal-action') === 'inc' ? 1 : -1;
+        updateCartQty(pid, delta);
+      });
+    });
+
+    renderCartSummary();
+  }
+
+  function handleOrderSubmit(e) {
+    e.preventDefault();
+    if (state.isSubmitting) return;
+
+    const entries = getCartEntries();
+    if (entries.length === 0) {
+      showToast('購物車是空的！');
+      return;
+    }
+
+    const payload = {
+      buyerName: document.getElementById('buyerName').value.trim(),
+      buyerPhone: document.getElementById('buyerPhone').value.trim(),
+      buyerLineName: document.getElementById('buyerLineName').value.trim(),
+      pickupLocation: document.getElementById('pickupLocation').value,
+      pickupTimeNote: document.getElementById('pickupTimeNote').value.trim(),
+      items: entries.map(item => ({
+        productId: item.product.productId,
+        qty: item.qty
+      }))
+    };
+
+    const submitBtn = document.getElementById('submitOrderBtn');
+    state.isSubmitting = true;
+    submitBtn.disabled = true;
+    submitBtn.textContent = '正在鎖定庫存並送出訂單...';
+
+    google.script.run
+      .withSuccessHandler(res => {
+        state.isSubmitting = false;
+        submitBtn.disabled = false;
+        submitBtn.textContent = '送出團購訂單';
+
+        state.cart = {};
+        saveCart();
+        closeCheckoutModal();
+        showSuccessModal(res);
+      })
+      .withFailureHandler(err => {
+        state.isSubmitting = false;
+        submitBtn.disabled = false;
+        submitBtn.textContent = '送出團購訂單';
+
+        showToast(err.message || '下單失敗，請檢查欄位後再試');
+        fetchStorefrontData();
+      })
+      .submitOrder(payload);
+  }
+
+  function showSuccessModal(res) {
+    const itemsHtml = (res.items || [])
+      .map(i => `<div>• ${escapeHtml(i.name)} × ${i.qty} = <strong>$${i.subtotal}</strong></div>`)
+      .join('');
+
+    document.getElementById('orderReceipt').innerHTML = `
+      <div><strong>訂單編號：</strong>${escapeHtml(res.orderId)}</div>
+      <div><strong>下單時間：</strong>${escapeHtml(res.createdAt)}</div>
+      <div><strong>面交地點：</strong>${escapeHtml(res.pickupLocation)}</div>
+      <hr style="border:none; border-top:1px dashed var(--border); margin:8px 0;" />
+      ${itemsHtml}
+      <hr style="border:none; border-top:1px dashed var(--border); margin:8px 0;" />
+      <div style="font-size:1rem;"><strong>應付總金額：NT$ ${res.totalAmount}</strong></div>
+    `;
+
+    document.getElementById('successModal').classList.add('open');
+  }
+
+  function loadSavedCart() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) state.cart = JSON.parse(raw) || {};
+    } catch (_) {
+      state.cart = {};
+    }
+  }
+
+  function saveCart() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.cart));
+    } catch (_) {
+      // 忽略 iframe 隱私模式下的 localStorage 限制
+    }
+  }
+
+  let toastTimer = null;
+  function showToast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+</script>
